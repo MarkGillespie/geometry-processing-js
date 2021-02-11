@@ -6055,6 +6055,7 @@ const [Mesh$1, indexElements$1] = mesh;
 const [Geometry$1, normalize$2] = geometry;
 const Vector$5 = linearAlgebra.Vector;
 const memoryManager = linearAlgebra.memoryManager;
+const Complex$3 = linearAlgebra.Complex;
 const DenseMatrix$1 = linearAlgebra.DenseMatrix;
 const SparseMatrix$4 = linearAlgebra.SparseMatrix;
 const Triplet$4 = linearAlgebra.Triplet;
@@ -6066,4 +6067,4 @@ const seismic$2 = colormap_1.seismic;
 const coolwarm$1 = colormap_1.coolwarm;
 const hot$1 = colormap_1.hot;
 
-export { ComplexDenseMatrix$2 as ComplexDenseMatrix, ComplexSparseMatrix$3 as ComplexSparseMatrix, ComplexTriplet$3 as ComplexTriplet, corner as Corner, discreteExteriorCalculus as DEC, DenseMatrix$1 as DenseMatrix, distortion as Distortion, edge as Edge, face as Face, Geometry$1 as Geometry, halfedge as Halfedge, Mesh$1 as Mesh, meshio as MeshIO, solvers as Solvers, SparseMatrix$4 as SparseMatrix, Triplet$4 as Triplet, Vector$5 as Vector, vertex as Vertex, colormap$2 as colormap, coolwarm$1 as coolwarm, hot$1 as hot, indexElements$1 as indexElements, memoryManager, seismic$2 as seismic };
+export { Complex$3 as Complex, ComplexDenseMatrix$2 as ComplexDenseMatrix, ComplexSparseMatrix$3 as ComplexSparseMatrix, ComplexTriplet$3 as ComplexTriplet, corner as Corner, discreteExteriorCalculus as DEC, DenseMatrix$1 as DenseMatrix, distortion as Distortion, edge as Edge, face as Face, Geometry$1 as Geometry, halfedge as Halfedge, Mesh$1 as Mesh, meshio as MeshIO, solvers as Solvers, SparseMatrix$4 as SparseMatrix, Triplet$4 as Triplet, Vector$5 as Vector, vertex as Vertex, colormap$2 as colormap, coolwarm$1 as coolwarm, hot$1 as hot, indexElements$1 as indexElements, memoryManager, seismic$2 as seismic };

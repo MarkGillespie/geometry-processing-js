@@ -43,6 +43,7 @@ export {
   Geometry,
   DEC,
   // Linear Algebra
+  Complex,
   ComplexDenseMatrix,
   DenseMatrix,
   ComplexSparseMatrix,

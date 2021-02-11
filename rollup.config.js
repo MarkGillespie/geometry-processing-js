@@ -9,13 +9,15 @@ export default [
     output: [
       {
         format: "umd",
-        name: "gpjs",
+        name: "window", // Add gpjs stuff to window so they're accessible as globals
+        extend: "true", // Don't overwrite window!
         file: "build/geometry-processing.js",
         plugins: [],
       },
       {
         format: "umd",
-        name: "gpjs",
+        name: "window", // Add gpjs stuff to window so they're accessible as globals
+        extend: "true", // Don't overwrite window!
         file: "build/geometry-processing.min.js",
         plugins: [terser()],
       },

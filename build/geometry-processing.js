@@ -1,7 +1,7 @@
 (function (global, factory) {
 	typeof exports === 'object' && typeof module !== 'undefined' ? factory(exports) :
 	typeof define === 'function' && define.amd ? define(['exports'], factory) :
-	(global = typeof globalThis !== 'undefined' ? globalThis : global || self, factory(global.gpjs = {}));
+	(global = typeof globalThis !== 'undefined' ? globalThis : global || self, factory(global.window = global.window || {}));
 }(this, (function (exports) { 'use strict';
 
 	class Vertex {
@@ -6061,6 +6061,7 @@
 	const [Geometry$1, normalize$2] = geometry;
 	const Vector$5 = linearAlgebra.Vector;
 	const memoryManager = linearAlgebra.memoryManager;
+	const Complex$3 = linearAlgebra.Complex;
 	const DenseMatrix$1 = linearAlgebra.DenseMatrix;
 	const SparseMatrix$4 = linearAlgebra.SparseMatrix;
 	const Triplet$4 = linearAlgebra.Triplet;
@@ -6072,6 +6073,7 @@
 	const coolwarm$1 = colormap_1.coolwarm;
 	const hot$1 = colormap_1.hot;
 
+	exports.Complex = Complex$3;
 	exports.ComplexDenseMatrix = ComplexDenseMatrix$2;
 	exports.ComplexSparseMatrix = ComplexSparseMatrix$3;
 	exports.ComplexTriplet = ComplexTriplet$3;

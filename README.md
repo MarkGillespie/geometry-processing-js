@@ -60,14 +60,14 @@ You can build a bundled version of the library using `rollup`. You need to insta
 ```bash
 npm install --global rollup
 npm install --save-dev rollup-plugin-terser
-npm install @rollup/plugin-commonjs --save-dev
+npm install --save-dev @rollup/plugin-commonjs
 npm install --save-dev rollup-plugin-node-polyfills
 ```
 Then you can build the bundle with
 ```bash
 rollup --config rollup.config.js
 ```
-This uses `build/build_helper.js` to build `build/geometry-processing.js`, `build/geometry-processing.min.js`, `build/geometry-processing.module.js` and `build/geometry-processing.module.min.js`.
+This uses `build/build_helper.js` to build `geometry-processing.js`, `geometry-processing.min.js`, `geometry-processing.module.js` and `geometry-processing.module.min.js` in the `build/` directory.
 
 ## Authors
 

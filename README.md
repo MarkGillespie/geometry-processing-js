@@ -55,6 +55,20 @@ The implementation of geometry-processing-js attempts to minimize the use of obs
 ## Building the Documentation
 See [guide here](doc-config/build-instructions.md).
 
+## Bundling the Library
+You can build a bundled version of the library using `rollup`. You need to install a few rollup plugins first
+```bash
+npm install --global rollup
+npm install --save-dev rollup-plugin-terser
+npm install @rollup/plugin-commonjs --save-dev
+npm install --save-dev rollup-plugin-node-polyfills
+```
+Then you can build the bundle with
+```bash
+rollup --config rollup.config.js
+```
+This uses `build/build_helper.js` to build `build/geometry-processing.js`, `build/geometry-processing.min.js`, `build/geometry-processing.module.js` and `build/geometry-processing.module.min.js`.
+
 ## Authors
 
 [Rohan Sawhney](http://rohansawhney.io)

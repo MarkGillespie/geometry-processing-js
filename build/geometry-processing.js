@@ -460,7 +460,7 @@
 	 *
 	 * @module Core
 	 */
-	class Halfedge {
+	class Halfedge$1 {
 		/**
 		 * This class defines the connectivity of a {@link module:Core.Mesh Mesh}.
 		 * @constructor module:Core.Halfedge
@@ -496,7 +496,7 @@
 		}
 	}
 
-	var halfedge = Halfedge;
+	var halfedge = Halfedge$1;
 
 	class Face {
 		/**
@@ -3938,7 +3938,7 @@
 		}
 	}
 
-	var geometry = [Geometry, normalize$1];
+	var geometry$1 = [Geometry, normalize$1];
 
 	let SparseMatrix$3 = linearAlgebra.SparseMatrix;
 	let Triplet$3 = linearAlgebra.Triplet;
@@ -4070,7 +4070,1435 @@
 
 	var discreteExteriorCalculus = DEC;
 
+	let Complex$2 = linearAlgebra.Complex;
+	let ComplexDenseMatrix$1 = linearAlgebra.ComplexDenseMatrix;
+
+	/**
+	 * This class implements frequently used numerical algorithms such as the inverse power method.
+	 * @memberof module:Utils
+	 */
+	class Solvers {
+		/**
+		 * Computes the residual of Ax - λx, where x has unit norm and λ = x.Ax.
+		 * @param {module:LinearAlgebra.ComplexSparseMatrix} A The complex sparse matrix whose eigen decomposition
+		 * is being computed.
+		 * @param {module:LinearAlgebra.ComplexDenseMatrix} x The current guess for the smallest eigenvector
+		 * (corresponding to the smallest eigenvalue λ) of A.
+		 * @returns {number}
+		 */
+		static residual(A, x) {
+			let Ax = A.timesDense(x);
+			let xH = x.transpose().conjugate();
+			let xHAx = xH.timesDense(Ax).get(0, 0);
+			let xHx = xH.timesDense(x).get(0, 0);
+			let lambda = xHAx.overComplex(xHx);
+
+			return Ax.minus(x.timesComplex(lambda)).get(0, 0).norm(2) / x.norm(2);
+		}
+
+		/**
+		 * Solves Ax = λx, where λ is the smallest nonzero eigenvalue of A and x is the
+		 * corresponding eigenvector. x should be initialized to a random complex dense
+		 * vector (i.e., x.nCols() == 1).
+		 * @param {module:LinearAlgebra.ComplexSparseMatrix} A The complex positive definite sparse matrix
+		 * whose eigen decomposition needs to be computed.
+		 * @returns {module:LinearAlgebra.ComplexDenseMatrix} The smallest eigenvector (corresponding to the
+		 * smallest eigenvalue λ) of A.
+		 */
+		static solveInversePowerMethod(A) {
+			// compute prefactorization
+			let N = A.nRows();
+			let llt = A.chol();
+			let ones = ComplexDenseMatrix$1.ones(N, 1);
+			let x = ComplexDenseMatrix$1.random(N, 1);
+
+			do {
+				x = llt.solvePositiveDefinite(x);
+
+				// subtract mean
+				let mean = x.sum().overReal(N);
+				x.decrementBy(ones.timesComplex(mean));
+
+				// normalize
+				x.scaleBy(new Complex$2(1.0 / x.norm(2)));
+
+			} while (Solvers.residual(A, x) > 1e-10);
+
+			return x;
+		}
+
+		/**
+		 * Inverts a 2x2 matrix.
+		 * @param {module:LinearAlgebra.DenseMatrix} m The matrix to be inverted.
+		 * @returns {module:LinearAlgebra.DenseMatrix}
+		 */
+		static invert2x2(m) {
+			let m00 = m.get(0, 0);
+			let m01 = m.get(0, 1);
+			let m10 = m.get(1, 0);
+			let m11 = m.get(1, 1);
+
+			let det = m00 * m11 - m01 * m10;
+			m.set(m11, 0, 0);
+			m.set(m00, 1, 1);
+			m.set(-m01, 0, 1);
+			m.set(-m10, 1, 0);
+			m.scaleBy(1.0 / det);
+
+			return m;
+		}
+	}
+
+	var solvers = Solvers;
+
 	let Vector$2 = linearAlgebra.Vector;
+	let Complex$3 = linearAlgebra.Complex;
+	let ComplexSparseMatrix$3 = linearAlgebra.ComplexSparseMatrix;
+	let ComplexTriplet$3 = linearAlgebra.ComplexTriplet;
+
+	let indexElements$1 = mesh[1];
+	let normalize$2 = geometry$1[1];
+
+	class SpectralConformalParameterization {
+		/**
+		 * This class implements the {@link https://www.cs.cmu.edu/~kmcrane/Projects/DDG/paper.pdf spectral conformal parameterization} algorithm to flatten
+		 * surface meshes with boundaries conformally.
+		 * @constructor module:Projects.SpectralConformalParameterization
+		 * @param {module:Core.Geometry} geometry The input geometry of the mesh this class acts on.
+		 * @property {module:Core.Geometry} geometry The input geometry of the mesh this class acts on.
+		 * @property {Object} vertexIndex A dictionary mapping each vertex of the input mesh to a unique index.
+		 */
+		constructor(geometry) {
+			this.geometry = geometry;
+			this.vertexIndex = indexElements$1(geometry.mesh.vertices);
+		}
+
+		/**
+		 * Builds the complex conformal energy matrix EC = ED - A.
+		 * @private
+		 * @method module:Projects.SpectralConformalParameterization#buildConformalEnergy
+		 * @returns {module:LinearAlgebra.ComplexSparseMatrix}
+		 */
+		buildConformalEnergy() {
+			// build the dirichlet energy matrix
+			let ED = this.geometry.complexLaplaceMatrix(this.vertexIndex);
+			ED.scaleBy(new Complex$3(0.5));
+
+			// build the area term
+			let ii = new Complex$3(0, 1);
+			let T = new ComplexTriplet$3(ED.nRows(), ED.nCols());
+			for (let b of this.geometry.mesh.boundaries) {
+				for (let h of b.adjacentHalfedges()) {
+					let i = this.vertexIndex[h.vertex];
+					let j = this.vertexIndex[h.twin.vertex];
+
+					T.addEntry(ii.timesReal(0.25), i, j);
+					T.addEntry(ii.timesReal(-0.25), j, i);
+				}
+			}
+
+			let A = ComplexSparseMatrix$3.fromTriplet(T);
+
+			return ED.minus(A);
+		}
+
+		/**
+		 * Flattens the input surface mesh with 1 or more boundaries conformally.
+		 * @method module:Projects.SpectralConformalParameterization#flatten
+		 * @returns {Object} A dictionary mapping each vertex to a vector of planar coordinates.
+		 */
+		flatten() {
+			let vertices = this.geometry.mesh.vertices;
+			let flattening = {};
+
+			// build the conformal energy matrix
+			let EC = this.buildConformalEnergy();
+
+			// find the eigenvector corresponding to the smallest eigenvalue of EC
+			let z = solvers.solveInversePowerMethod(EC);
+
+			// assign flattening
+			for (let v of vertices) {
+				let i = this.vertexIndex[v];
+				let zi = z.get(i, 0);
+
+				flattening[v] = new Vector$2(zi.re, zi.im);
+			}
+
+			// normalize flattening
+			normalize$2(flattening, vertices);
+
+			return flattening;
+		}
+	}
+
+	var spectralConformalParameterization = SpectralConformalParameterization;
+
+	let Vector$3 = linearAlgebra.Vector;
+	let DenseMatrix$1 = linearAlgebra.DenseMatrix;
+	let SparseMatrix$4 = linearAlgebra.SparseMatrix;
+
+	let normalize$3 = geometry$1[1];
+
+	class BoundaryFirstFlattening {
+		/**
+		 * This class implements the {@link https://arxiv.org/pdf/1704.06873.pdf boundary first flattening} algorithm to flatten
+		 * surface meshes with a single boundary conformally.
+		 * @constructor module:Projects.BoundaryFirstFlattening
+		 * @param {module:Core.Geometry} geometry The input geometry of the mesh this class acts on.
+		 * @property {module:Core.Geometry} geometry The input geometry of the mesh this class acts on.
+		 * @property {module:Core.Face[]} boundary The boundary of the input mesh.
+		 * @property {number} nV The number of vertices in the input mesh.
+		 * @property {number} nI The number of interior vertices in the input mesh.
+		 * @property {number} nB The number of boundary vertices in the input mesh.
+		 * @property {Object} vertexIndex A dictionary mapping each vertex of the input mesh to a unique index.
+		 * @property {Object} bVertexIndex A dictionary mapping each boundary vertex of the input mesh to a unique index.
+		 * @property {module:LinearAlgebra.DenseMatrix} K The integrated gaussian curvatures of the input mesh.
+		 * @property {module:LinearAlgebra.DenseMatrix} k The integrated geodesic curvatures of the input mesh.
+		 * @property {module:LinearAlgebra.DenseMatrix} l The boundary edge lengths of the input mesh.
+		 * @property {module:LinearAlgebra.SparseMatrix} A The laplace matrix of the input mesh partitioned by interior and boundary vertices.
+		 * @property {module:LinearAlgebra.SparseMatrix} Aii The upper left block of the partitioned laplace matrix.
+		 * @property {module:LinearAlgebra.SparseMatrix} Aib The upper right block of the partitioned laplace matrix.
+		 * @property {module:LinearAlgebra.SparseMatrix} Abb The lower right block of the partitioned laplace matrix.
+		 */
+		constructor(geometry) {
+			this.geometry = geometry;
+			this.boundary = geometry.mesh.boundaries[0];
+
+			this.indexVertices();
+			this.computeIntegratedCurvatures();
+			this.computeBoundaryLengths();
+
+			this.A = geometry.laplaceMatrix(this.vertexIndex);
+			this.Aii = this.A.subMatrix(0, this.nI, 0, this.nI);
+			this.Aib = this.A.subMatrix(0, this.nI, this.nI, this.nV);
+			this.Abb = this.A.subMatrix(this.nI, this.nV, this.nI, this.nV);
+		}
+
+		/**
+		 * Counts the number of interior and boundary vertices in the input mesh and assigns
+		 * unique indices to each vertex.
+		 * @private
+		 * @method module:Projects.BoundaryFirstFlattening#indexVertices
+		 */
+		indexVertices() {
+			let vertices = geometry.mesh.vertices;
+			this.nV = vertices.length;
+			this.nI = 0;
+			this.nB = 0;
+			this.vertexIndex = {};
+			this.bVertexIndex = {};
+
+			// count interior vertices and map them to a unique index
+			for (let v of vertices) {
+				if (!v.onBoundary()) {
+					this.vertexIndex[v] = this.nI;
+					this.nI++;
+				}
+			}
+
+			// count boundary vertices and map them to unique indices
+			for (let v of vertices) {
+				if (v.onBoundary()) {
+					this.bVertexIndex[v] = this.nB;
+					this.vertexIndex[v] = this.nI + this.nB;
+					this.nB++;
+				}
+			}
+		}
+
+		/**
+		 * Computes the integrated gaussian and geodesic curvatures of the input mesh.
+		 * @private
+		 * @method module:Projects.BoundaryFirstFlattening#computeIntegratedCurvatures
+		 */
+		computeIntegratedCurvatures() {
+			this.K = DenseMatrix$1.zeros(this.nI, 1);
+			this.k = DenseMatrix$1.zeros(this.nB, 1);
+			for (let v of geometry.mesh.vertices) {
+				let angleDefect = geometry.angleDefect(v);
+
+				if (v.onBoundary()) {
+					// set the integrated geodesic curvature at this boundary vertex
+					let i = this.bVertexIndex[v];
+					this.k.set(angleDefect, i, 0);
+
+				} else {
+					// set the integrated gaussian curvature at this interior vertex
+					let i = this.vertexIndex[v];
+					this.K.set(angleDefect, i, 0);
+				}
+			}
+		}
+
+		/**
+		 * Computes the boundary edge lengths of the input mesh.
+		 * @private
+		 * @method module:Projects.BoundaryFirstFlattening#computeBoundaryLengths
+		 */
+		computeBoundaryLengths() {
+			this.l = DenseMatrix$1.zeros(this.nB, 1);
+			for (let he of this.boundary.adjacentHalfedges()) {
+				let i = this.bVertexIndex[he.vertex];
+
+				this.l.set(geometry.length(he.edge), i, 0);
+			}
+		}
+
+		/**
+		 * Computes the target boundary edge lengths of the flattening.
+		 * @private
+		 * @method module:Projects.BoundaryFirstFlattening#computeTargetBoundaryLengths
+		 * @param {module:LinearAlgebra.DenseMatrix} u The target boundary scale factors.
+		 * @returns {module:LinearAlgebra.DenseMatrix}
+		 */
+		computeTargetBoundaryLengths(u) {
+			let lstar = DenseMatrix$1.zeros(this.nB, 1);
+			for (let he of this.boundary.adjacentHalfedges()) {
+				let i = this.bVertexIndex[he.vertex];
+				let j = this.bVertexIndex[he.next.vertex];
+				let ui = u.get(i, 0);
+				let uj = u.get(j, 0);
+				let lij = this.l.get(i, 0);
+
+				lstar.set(Math.exp((ui + uj) / 2) * lij, i, 0);
+			}
+
+			return lstar;
+		}
+
+		/**
+		 * Computes the dual boundary edge lengths of the flattening.
+		 * @private
+		 * @method module:Projects.BoundaryFirstFlattening#computeDualBoundaryLengths
+		 * @param {Object} flattening A dictionary mapping each vertex to a vector of planar coordinates.
+		 * @returns {module:LinearAlgebra.DenseMatrix}
+		 */
+		computeDualBoundaryLengths(flattening) {
+			let ldual = DenseMatrix$1.zeros(this.nB, 1);
+			for (let he of this.boundary.adjacentHalfedges()) {
+				let j = this.bVertexIndex[he.vertex];
+				let vi = flattening[he.prev.vertex];
+				let vj = flattening[he.vertex];
+				let vk = flattening[he.next.vertex];
+
+				ldual.set((vj.minus(vi).norm() + vk.minus(vj).norm()) / 2, j, 0);
+			}
+
+			return ldual;
+		}
+
+		/**
+		 * Evaluates the Dirichlet to Neumann map.
+		 * @private
+		 * @method module:Projects.BoundaryFirstFlattening#dirichletToNeumann
+		 * @param {module:LinearAlgebra.DenseMatrix} phi The source term.
+		 * @param {module:LinearAlgebra.DenseMatrix} g The Dirichlet boundary data.
+		 * @returns {module:LinearAlgebra.DenseMatrix}
+		 */
+		dirichletToNeumann(phi, g) {
+			let llt = this.Aii.chol();
+			let a = llt.solvePositiveDefinite(phi.minus(this.Aib.timesDense(g)));
+
+			return this.Aib.transpose().timesDense(a).plus(this.Abb.timesDense(g)).negated();
+		}
+
+		/**
+		 * Evaluates the Neumann to Dirichlet map.
+		 * @private
+		 * @method module:Projects.BoundaryFirstFlattening#neumannToDirichlet
+		 * @param {module:LinearAlgebra.DenseMatrix} phi The source term.
+		 * @param {module:LinearAlgebra.DenseMatrix} h The Neumann boundary data.
+		 * @returns {module:LinearAlgebra.DenseMatrix}
+		 */
+		neumannToDirichlet(phi, h) {
+			let llt = this.A.chol();
+			let a = llt.solvePositiveDefinite(phi.vcat(h.negated()));
+
+			return a.subMatrix(this.nI, this.nV);
+		}
+
+		/**
+		 * Constructs a best fit closed conformal loop from the prescribed boundary data.
+		 * @private
+		 * @method module:Projects.BoundaryFirstFlattening#constructBestFitCurve
+		 * @param {module:LinearAlgebra.DenseMatrix} lstar The target boundary edge lengths of the flattening.
+		 * @param {module:LinearAlgebra.DenseMatrix} ktilde The target boundary curvatures of the flattening.
+		 * @return {Object} A dictionary mapping each boundary vertex of the input mesh to planar coordinates.
+		 * The values for each coordinate are stored in a {@link module:LinearAlgebra.DenseMatrix dense matrix}.
+		 */
+		constructBestFitCurve(lstar, ktilde) {
+			// compute tangents to the closed boundary curve
+			let phi = 0;
+			let T = DenseMatrix$1.zeros(2, this.nB);
+			for (let he of this.boundary.adjacentHalfedges()) {
+				let i = this.bVertexIndex[he.vertex];
+
+				phi += ktilde.get(i, 0);
+				T.set(Math.cos(phi), 0, i);
+				T.set(Math.sin(phi), 1, i);
+			}
+
+			// adjust lengths to ensure the curve closes
+			let Ninv = SparseMatrix$4.diag(this.l);
+			let TT = T.transpose();
+			let m = solvers.invert2x2(T.timesDense(Ninv.timesDense(TT)));
+			let ltilde = lstar.minus(Ninv.timesDense(TT.timesDense(m.timesDense(T.timesDense(lstar)))));
+
+			// build the curve
+			let re = 0;
+			let im = 0;
+			let gammaRe = DenseMatrix$1.zeros(this.nB, 1);
+			let gammaIm = DenseMatrix$1.zeros(this.nB, 1);
+			for (let he of this.boundary.adjacentHalfedges()) {
+				let i = this.bVertexIndex[he.vertex];
+
+				gammaRe.set(re, i, 0);
+				gammaIm.set(im, i, 0);
+				re += ltilde.get(i, 0) * T.get(0, i);
+				im += ltilde.get(i, 0) * T.get(1, i);
+			}
+
+			return {
+				"re": gammaRe,
+				"im": gammaIm
+			};
+		}
+
+		/**
+		 * Harmonically extends Dirichlet boundary data.
+		 * @private
+		 * @method module:Projects.BoundaryFirstFlattening#extendHarmonic
+		 * @param {module:LinearAlgebra.DenseMatrix} g The Dirichlet boundary data.
+		 * @return {module:LinearAlgebra.DenseMatrix}
+		 */
+		extendHarmonic(g) {
+			let llt = this.Aii.chol();
+			let a = llt.solvePositiveDefinite(this.Aib.timesDense(g).negated());
+
+			return a.vcat(g);
+		}
+
+		/**
+		 * Extends a boundary curve holomorphically or harmonically to the interior.
+		 * @private
+		 * @method module:Projects.BoundaryFirstFlattening#extendCurve
+		 * @param {Object} gamma A dictionary mapping each boundary vertex of the input mesh to planar coordinates.
+		 * @param {module:LinearAlgebra.DenseMatrix} gamma.re The real/x component of the planar coordinates.
+		 * @param {module:LinearAlgebra.DenseMatrix} gamma.im The imaginary/y component of the planar coordinates.
+		 * @param {boolean} extendHolomorphically A flag indicating whether the interior of
+		 * the flattened domain should be extended holomorphically or harmonically.
+		 * @returns {Object} A dictionary mapping each vertex to a vector of planar coordinates.
+		 */
+		extendCurve(gamma, extendHolomorphically) {
+			// harmonically extend the real component of gamma
+			let a = this.extendHarmonic(gamma["re"]);
+
+			let b;
+			if (extendHolomorphically) {
+				// compute the hilbert transform of the tangential derivative of a
+				let h = DenseMatrix$1.zeros(this.nV, 1);
+				for (let he of this.boundary.adjacentHalfedges()) {
+					let i = this.vertexIndex[he.prev.vertex];
+					let j = this.vertexIndex[he.vertex];
+					let k = this.vertexIndex[he.next.vertex];
+
+					h.set(-(a.get(k, 0) - a.get(i, 0)) / 2, j, 0); // minus sign accounts for clockwise boundary traversal
+				}
+
+				// holomorphically extend the imaginary component of gamma
+				let llt = this.A.chol();
+				b = llt.solvePositiveDefinite(h);
+
+			} else {
+				// harmonically extend the imaginary component of gamma
+				b = this.extendHarmonic(gamma["im"]);
+			}
+
+			return {
+				"re": a,
+				"im": b
+			};
+		}
+
+		/**
+		 * Given the target boundary scale factors and the curvatures, flattens the
+		 * input surface mesh with a single boundary conformally.
+		 * @private
+		 * @method module:Projects.BoundaryFirstFlattening#flattenWithScaleFactorsAndCurvatures
+		 * @param {module:LinearAlgebra.DenseMatrix} u The target boundary scale factors.
+		 * @param {module:LinearAlgebra.DenseMatrix} ktilde The target boundary curvatures.
+		 * @param {boolean} extendHolomorphically A flag indicating whether the interior of
+		 * the flattened domain should be extended holomorphically or harmonically.
+		 * @param {boolean} rescale A flag indicating whether the flattening should be scaled
+		 * to unit radius.
+		 * @returns {Object} A dictionary mapping each vertex to a vector of planar coordinates.
+		 */
+		flattenWithScaleFactorsAndCurvatures(u, ktilde, extendHolomorphically, rescale) {
+			// compute the target boundary edge lengths of the flattening
+			let lstar = this.computeTargetBoundaryLengths(u);
+
+			// construct the best fit conformal boundary curve
+			let gamma = this.constructBestFitCurve(lstar, ktilde);
+
+			// extend the curve holomorphically or harmonically to the interior
+			let extension = this.extendCurve(gamma, extendHolomorphically);
+
+			// assign flattening
+			let flattening = {};
+			for (let v of this.geometry.mesh.vertices) {
+				let i = this.vertexIndex[v];
+				let re = extension["re"].get(i, 0);
+				let im = extension["im"].get(i, 0);
+
+				flattening[v] = new Vector$3(-re, im); // minus sign accounts for clockwise boundary traversal
+			}
+
+			// normalize flattening
+			normalize$3(flattening, this.geometry.mesh.vertices, rescale);
+
+			return flattening;
+		}
+
+		/**
+		 * Given either the target boundary scale factors or the curvatures, flattens the
+		 * input surface mesh with a single boundary conformally.
+		 * @method module:Projects.BoundaryFirstFlattening#flatten
+		 * @param {module:LinearAlgebra.DenseMatrix} target Either the target boundary scale factors
+		 * or the curvatures.
+		 * @param {boolean} givenScaleFactors A flag indicating whether the input data contains
+		 * the target boundary scale factors.
+		 * @param {boolean} rescale A flag indicating whether the flattening should be
+		 * scaled to unit radius. Default value is true
+		 * @returns {Object} A dictionary mapping each vertex to a vector of planar coordinates.
+		 */
+		flatten(target, givenScaleFactors, rescale = true) {
+			let u, ktilde;
+			if (givenScaleFactors) {
+				// given target boundary scale factors
+				u = target;
+
+				// compute the normal derivative of the boundary scale factors
+				let h = this.dirichletToNeumann(this.K.negated(), u);
+
+				// compute compatible target boundary curvatures
+				ktilde = this.k.minus(h);
+
+			} else {
+				// given target boundary curvatures
+				ktilde = target;
+
+				// compute the normal derivative of the boundary scale factors
+				let h = this.k.minus(ktilde);
+
+				// compute compatible target boundary scale factors
+				u = this.neumannToDirichlet(this.K.negated(), h);
+			}
+
+			// flatten with target boundary scale factors and curvatures
+			return this.flattenWithScaleFactorsAndCurvatures(u, ktilde, givenScaleFactors, rescale);
+		}
+
+		/**
+		 * Flattens the input surface mesh with a single boundary conformally to a disk.
+		 * @method module:Projects.BoundaryFirstFlattening#flattenToDisk
+		 * @return {Object} A dictionary mapping each vertex to a vector of planar coordinates.
+		 */
+		flattenToDisk() {
+			let flattening = this.geometry.positions;
+			for (let iter = 0; iter < 10; iter++) {
+				// compute dual boundary edge lengths of the previous flattening
+				let ldual = this.computeDualBoundaryLengths(flattening);
+				let L = ldual.sum();
+
+				// set ktilde proportional to the most recent dual boundary edge lengths
+				let ktilde = DenseMatrix$1.zeros(this.nB, 1);
+				for (let he of this.boundary.adjacentHalfedges()) {
+					let i = this.bVertexIndex[he.vertex];
+
+					ktilde.set(2 * Math.PI * ldual.get(i, 0) / L, i, 0);
+				}
+
+				// compute the normal derivative of the boundary scale factors
+				let h = this.k.minus(ktilde);
+
+				// compute compatible target boundary scale factors
+				let u = this.neumannToDirichlet(this.K.negated(), h);
+
+				// flatten with target boundary scale factors and curvatures
+				flattening = this.flattenWithScaleFactorsAndCurvatures(u, ktilde, false, true);
+			}
+
+			return flattening;
+		}
+	}
+
+	var boundaryFirstFlattening = BoundaryFirstFlattening;
+
+	let SparseMatrix$5 = linearAlgebra.SparseMatrix;
+
+	let indexElements$2 = mesh[1];
+
+	class HodgeDecomposition {
+		/**
+		 * This class computes the {@link https://www.cs.cmu.edu/~kmcrane/Projects/DDG/paper.pdf hodge decomposition} of a vector field on a surface mesh.
+		 * @constructor module:Projects.HodgeDecomposition
+		 * @param {module:Core.Geometry} geometry The input geometry of the mesh this class acts on.
+		 * @property {Object} edgeIndex A dictionary mapping each edge of the input mesh to a unique index.
+		 * @property {module:LinearAlgebra.SparseMatrix} hodge1 The hodge star 1-form matrix of the input mesh.
+		 * @property {module:LinearAlgebra.SparseMatrix} hodge2 The hodge star 2-form matrix of the input mesh.
+		 * @property {module:LinearAlgebra.SparseMatrix} d0 The exterior derivaitve 0-form matrix of the input mesh.
+		 * @property {module:LinearAlgebra.SparseMatrix} d1 The exterior derivaitve 1-form matrix of the input mesh.
+		 * @property {module:LinearAlgebra.SparseMatrix} hodge1Inv The inverse hodge star 1-form matrix of the input mesh.
+		 * @property {module:LinearAlgebra.SparseMatrix} hodge2Inv The inverse hodge star 2-form matrix of the input mesh.
+		 * @property {module:LinearAlgebra.SparseMatrix} d0T Transpose of the exterior derivaitve 0-form matrix of the input mesh.
+		 * @property {module:LinearAlgebra.SparseMatrix} d1T Transpose of the exterior derivaitve 1-form matrix of the input mesh.
+		 * @property {module:LinearAlgebra.SparseMatrix} A The 0-form laplace matrix d0^T star1 d0 of the input mesh.
+		 * @property {module:LinearAlgebra.SparseMatrix} B The 2-form matrix d1 star1^-1 d1^T of the input mesh.
+		 */
+		constructor(geometry) {
+			// index vertices, edges and faces
+			let vertexIndex = indexElements$2(geometry.mesh.vertices);
+			this.edgeIndex = indexElements$2(geometry.mesh.edges);
+			let faceIndex = indexElements$2(geometry.mesh.faces);
+
+			// compute DEC operators
+			this.hodge1 = discreteExteriorCalculus.buildHodgeStar1Form(geometry, this.edgeIndex);
+			this.hodge2 = discreteExteriorCalculus.buildHodgeStar2Form(geometry, faceIndex);
+			this.d0 = discreteExteriorCalculus.buildExteriorDerivative0Form(geometry, this.edgeIndex, vertexIndex);
+			this.d1 = discreteExteriorCalculus.buildExteriorDerivative1Form(geometry, faceIndex, this.edgeIndex);
+
+			this.hodge1Inv = this.hodge1.invertDiagonal();
+			this.hodge2Inv = this.hodge2.invertDiagonal();
+			this.d0T = this.d0.transpose();
+			this.d1T = this.d1.transpose();
+
+			// construct 0-form laplace matrix
+			// shift the matrix by a small constant (1e-8) to make it positive definite
+			let V = geometry.mesh.vertices.length;
+			this.A = this.d0T.timesSparse(this.hodge1.timesSparse(this.d0));
+			this.A.incrementBy(SparseMatrix$5.identity(V, V).timesReal(1e-8));
+
+			// construct two form matrix
+			this.B = this.d1.timesSparse(this.hodge1Inv.timesSparse(this.d1T));
+		}
+
+		/**
+		 * Computes the 0-form potential α by solving the system 𝛿dα = 𝛿ω.
+		 * @method module:Projects.HodgeDecomposition#computeExactComponent
+		 * @param {module:LinearAlgebra.DenseMatrix} omega A 1-form on the edges of the input mesh.
+		 * @returns {module:LinearAlgebra.DenseMatrix} The exact component dα of ω.
+		 */
+		computeExactComponent(omega) {
+			// construct right hand side
+			let rhs = this.d0T.timesDense(this.hodge1.timesDense(omega));
+
+			// solve linear system
+			let llt = this.A.chol();
+			let alpha = llt.solvePositiveDefinite(rhs);
+
+			return this.d0.timesDense(alpha);
+		}
+
+		/**
+		 * Computes the 2-form potential β by solving the system d𝛿β = dω.
+		 * @method module:Projects.HodgeDecomposition#computeCoExactComponent
+		 * @param {module:LinearAlgebra.DenseMatrix} omega A 1-form on the edges of the input mesh.
+		 * @returns {module:LinearAlgebra.DenseMatrix} The coexact component 𝛿β of ω.
+		 */
+		computeCoExactComponent(omega) {
+			// construct right hand side
+			let rhs = this.d1.timesDense(omega);
+
+			// solve linear system
+			let lu = this.B.lu();
+			let betaTilde = lu.solveSquare(rhs);
+
+			return this.hodge1Inv.timesDense(this.d1T.timesDense(betaTilde));
+		}
+
+		/**
+		 * Computes the harmonic component γ = ω - dα - 𝛿β of ω.
+		 * @method module:Projects.HodgeDecomposition#computeHarmonicComponent
+		 * @param {module:LinearAlgebra.DenseMatrix} omega A 1-form on the edges of the input mesh.
+		 * @param {module:LinearAlgebra.DenseMatrix} dAlpha The exact component of ω.
+		 * @param {module:LinearAlgebra.DenseMatrix} deltaBeta The coexact component of ω.
+		 * @returns {module:LinearAlgebra.DenseMatrix}
+		 */
+		computeHarmonicComponent(omega, dAlpha, deltaBeta) {
+			return omega.minus(dAlpha.plus(deltaBeta));
+		}
+	}
+
+	var hodgeDecomposition = HodgeDecomposition;
+
+	class TreeCotree {
+		/**
+		 * This class computes the {@link https://www.cs.cmu.edu/~kmcrane/Projects/DDG/paper.pdf tree cotree} decomposition of a surface mesh
+		 * to build its {@link https://en.wikipedia.org/wiki/Homology_(mathematics)#Surfaces homology generators}.
+		 * @constructor module:Projects.TreeCotree
+		 * @param {module:Core.Mesh} mesh The input mesh this class acts on.
+		 * @property {module:Core.Mesh} mesh The input mesh this class acts on.
+		 * @property {vertexParent} vertexParent A dictionary mapping each vertex of the input mesh to
+		 * its parent in the primal spanning tree.
+		 * @property {faceParent} faceParent A dictionary mapping each face of the input mesh to
+		 * its parent in the dual spanning tree.
+		 */
+		constructor(mesh) {
+			this.mesh = mesh;
+			this.vertexParent = {};
+			this.faceParent = {};
+		}
+
+		/**
+		 * Builds a primal spanning tree on a boundaryless mesh.
+		 * @private
+		 * @method module:Projects.TreeCotree#buildPrimalSpanningTree
+		 */
+		buildPrimalSpanningTree() {
+			// mark each vertex as its own parent
+			for (let v of this.mesh.vertices) {
+				this.vertexParent[v] = v;
+			}
+
+			// build spanning tree
+			let root = this.mesh.vertices[0];
+			let queue = [root];
+			while (queue.length !== 0) {
+				let u = queue.shift();
+
+				for (let v of u.adjacentVertices()) {
+					if (this.vertexParent[v] === v && v !== root) {
+						this.vertexParent[v] = u;
+						queue.push(v);
+					}
+				}
+			}
+		}
+
+		/**
+		 * Checks whether a halfedge is in the primal spanning tree.
+		 * @private
+		 * @method module:Projects.TreeCotree#inPrimalSpanningTree
+		 * @param {module:Core.Halfedge} h A halfedge on the input mesh.
+		 * @returns {boolean}
+		 */
+		inPrimalSpanningTree(h) {
+			let u = h.vertex;
+			let v = h.twin.vertex;
+
+			return this.vertexParent[u] === v || this.vertexParent[v] === u;
+		}
+
+		/**
+		 * Builds a dual spanning tree on a boundaryless mesh.
+		 * @private
+		 * @method module:Projects.TreeCotree#buildDualSpanningCotree
+		 */
+		buildDualSpanningCotree() {
+			// mark each face as its own parent
+			for (let f of this.mesh.faces) {
+				this.faceParent[f] = f;
+			}
+
+			// build dual spanning tree
+			let root = this.mesh.faces[0];
+			let queue = [root];
+			while (queue.length !== 0) {
+				let f = queue.shift();
+
+				for (let h of f.adjacentHalfedges()) {
+					if (!this.inPrimalSpanningTree(h)) {
+						let g = h.twin.face;
+
+						if (this.faceParent[g] === g && g !== root) {
+							this.faceParent[g] = f;
+							queue.push(g);
+						}
+					}
+				}
+			}
+		}
+
+		/**
+		 * Checks whether a halfedge is in the dual spanning tree.
+		 * @private
+		 * @method module:Projects.TreeCotree#inDualSpanningTree
+		 * @param {module:Core.Halfedge} h A halfedge on the input mesh.
+		 * @returns {boolean}
+		 */
+		inDualSpanningTree(h) {
+			let f = h.face;
+			let g = h.twin.face;
+
+			return this.faceParent[f] === g || this.faceParent[g] === f;
+		}
+
+		/**
+		 * Returns a halfedge lying on the shared edge between face f and g.
+		 * @private
+		 * @method module:Projects.TreeCotree#sharedHalfedge
+		 * @param {module:Core.Face} f A face on the input mesh.
+		 * @param {module:Core.Face} g A neighboring face to f on the input mesh.
+		 * @returns {module:Core.Halfedge}
+		 */
+		sharedHalfedge(f, g) {
+			for (let h of f.adjacentHalfedges()) {
+				if (h.twin.face === g) {
+					return h;
+				}
+			}
+
+			alert("Line 120, sharedHalfedge, tree-cotree.js: Code should not reach here!");
+			return new Halfedge();
+		}
+
+		/**
+		 * Computes the {@link https://en.wikipedia.org/wiki/Homology_(mathematics)#Surfaces homology generators} of the input mesh and stores them
+		 * in the {@link module:Core.Mesh Mesh}'s generators property.
+		 * @method module:Projects.TreeCotree#buildGenerators
+		 */
+		buildGenerators() {
+			// build spanning trees
+			this.buildPrimalSpanningTree();
+			this.buildDualSpanningCotree();
+
+			// collect dual edges that are neither in primal spanning tree nor in dual spanning cotree
+			for (let e of this.mesh.edges) {
+				let h = e.halfedge;
+
+				if (!this.inPrimalSpanningTree(h) && !this.inDualSpanningTree(h)) {
+					// trace faces back to root
+					let tempGenerator1 = [];
+					let f = h.face;
+					while (this.faceParent[f] !== f) {
+						let parent = this.faceParent[f];
+						tempGenerator1.push(this.sharedHalfedge(f, parent));
+						f = parent;
+					}
+
+					let tempGenerator2 = [];
+					f = h.twin.face;
+					while (this.faceParent[f] !== f) {
+						let parent = this.faceParent[f];
+						tempGenerator2.push(this.sharedHalfedge(f, parent));
+						f = parent;
+					}
+
+					// remove common halfedges
+					let m = tempGenerator1.length - 1;
+					let n = tempGenerator2.length - 1;
+					while (tempGenerator1[m] === tempGenerator2[n]) {
+						m--;
+						n--;
+					}
+
+					let generator = [h];
+					for (let i = 0; i <= m; i++) generator.push(tempGenerator1[i].twin);
+					for (let i = n; i >= 0; i--) generator.push(tempGenerator2[i]);
+
+					this.mesh.generators.push(generator);
+				}
+			}
+		}
+	}
+
+	var treeCotree = TreeCotree;
+
+	let DenseMatrix$2 = linearAlgebra.DenseMatrix;
+	let indexElements$3 = mesh[1];
+
+	class HarmonicBases {
+		/**
+		 * This class computes the {@link https://www.cs.cmu.edu/~kmcrane/Projects/DDG/paper.pdf harmonic bases} of a surface mesh.
+		 * @constructor module:Projects.HarmonicBases
+		 * @param {module:Core.Geometry} geometry The input geometry of the mesh this class acts on.
+		 */
+		constructor(geometry) {
+			this.geometry = geometry;
+		}
+
+		/**
+		 * Builds a closed, but not exact, primal 1-form ω.
+		 * @private
+		 * @method module:Projects.HarmonicBases#buildClosedPrimalOneForm
+		 * @param {module:Core.Halfedge[]} generator An array of halfedges representing a
+		 * {@link https://en.wikipedia.org/wiki/Homology_(mathematics)#Surfaces homology generator}
+		 * of the input mesh.
+		 * @param {Object} edgeIndex A dictionary mapping each edge of the input mesh
+		 * to a unique index.
+		 * @returns {module:LinearAlgebra.DenseMatrix}
+		 */
+		buildClosedPrimalOneForm(generator, edgeIndex) {
+			let E = this.geometry.mesh.edges.length;
+			let omega = DenseMatrix$2.zeros(E, 1);
+			for (let h of generator) {
+				let i = edgeIndex[h.edge];
+				let sign = h.edge.halfedge === h ? 1 : -1;
+
+				omega.set(sign, i, 0);
+			}
+
+			return omega;
+		}
+
+		/**
+		 * Computes the harmonic bases [γ1, γ2 ... γn] of the input mesh.
+		 * @method module:Projects.HarmonicBases#compute
+		 * @param {module:Projects.HodgeDecomposition} hodgeDecomposition A hodge decomposition object that
+		 * can be used to compute the exact component of the closed, but not exact, primal
+		 * 1-form ω.
+		 * @returns {module:LinearAlgebra.DenseMatrix[]}
+		 */
+		compute(hodgeDecomposition) {
+			let gammas = [];
+			let generators = this.geometry.mesh.generators;
+
+			if (generators.length > 0) {
+				// index edges
+				let edgeIndex = indexElements$3(this.geometry.mesh.edges);
+
+				// build bases with generators
+				for (let generator of generators) {
+					// build closed primal one form
+					let omega = this.buildClosedPrimalOneForm(generator, edgeIndex);
+
+					// compute exact component dα
+					let dAlpha = hodgeDecomposition.computeExactComponent(omega);
+
+					// extract harmonic component
+					gammas.push(omega.minus(dAlpha));
+				}
+			}
+
+			return gammas;
+		}
+	}
+
+	var harmonicBases = HarmonicBases;
+
+	let DenseMatrix$3 = linearAlgebra.DenseMatrix;
+	let SparseMatrix$6 = linearAlgebra.SparseMatrix;
+	let Triplet$4 = linearAlgebra.Triplet;
+
+
+
+	let indexElements$4 = mesh[1];
+
+	class TrivialConnections {
+		/**
+		 * This class implements the {@link https://www.cs.cmu.edu/~kmcrane/Projects/DDG/paper.pdf trivial connections} algorithm to compute a smooth
+		 * 1-form vector fields on a surface mesh.
+		 * @constructor module:Projects.TrivialConnections
+		 * @param {module:Core.Geometry} geometry The input geometry of the mesh this class acts on.
+		 * @property {Object} vertexIndex A dictionary mapping each vertex of the input mesh to a unique index.
+		 * @property {Object} edgeIndex A dictionary mapping each edge of the input mesh to a unique index.
+		 * @property {module:LinearAlgebra.DenseMatrix[]} bases The harmonic bases [γ1, γ2 ... γn] of the input mesh.
+		 * @property {module:LinearAlgebra.SparseMatrix} P The period matrix of the input mesh.
+		 * @property {module:LinearAlgebra.SparseMatrix} A The 0-form laplace matrix d0^T star1 d0 of the input mesh.
+		 * @property {module:LinearAlgebra.SparseMatrix} hodge1 The hodge star 1-form matrix of the input mesh.
+		 * @property {module:LinearAlgebra.SparseMatrix} d0 The exterior derivaitve 0-form matrix of the input mesh.
+		 */
+		constructor(geometry) {
+			this.geometry = geometry;
+			this.vertexIndex = indexElements$4(geometry.mesh.vertices);
+			this.edgeIndex = indexElements$4(geometry.mesh.edges);
+
+			// initialize hodge decomposition
+			let hodgeDecomposition$1 = new hodgeDecomposition(geometry);
+
+			// build generators
+			let treeCotree$1 = new treeCotree(geometry.mesh);
+			treeCotree$1.buildGenerators();
+
+			// build harmonic bases
+			let harmonicBases$1 = new harmonicBases(geometry);
+			this.bases = harmonicBases$1.compute(hodgeDecomposition$1);
+
+			// build period matrix and store relevant DEC operators
+			this.P = this.buildPeriodMatrix();
+			this.A = hodgeDecomposition$1.A;
+			this.hodge1 = hodgeDecomposition$1.hodge1;
+			this.d0 = hodgeDecomposition$1.d0;
+		}
+
+		/**
+		 * Builds the period matrix Pij = ∑_{ek ∈ li} (ξj)k, where li is the ith homology generator,
+		 * ek is a dual edge in li and ξj is the jth harmonic 1-form basis.
+		 * @private
+		 * @method module:Projects.TrivialConnections#buildPeriodMatrix
+		 * @returns {module:LinearAlgebra.SparseMatrix}
+		 */
+		buildPeriodMatrix() {
+			let N = this.bases.length;
+			let T = new Triplet$4(N, N);
+
+			for (let i = 0; i < N; i++) {
+				let generator = this.geometry.mesh.generators[i];
+
+				for (let j = 0; j < N; j++) {
+					let basis = this.bases[j];
+					let sum = 0;
+
+					for (let h of generator) {
+						let k = this.edgeIndex[h.edge];
+						let sign = h.edge.halfedge === h ? 1 : -1;
+
+						sum += sign * basis.get(k, 0);
+					}
+
+					T.addEntry(sum, i, j);
+				}
+			}
+
+			return SparseMatrix$6.fromTriplet(T);
+		}
+
+		/**
+		 * Checks whether Gauss Bonnet is satisfied, i.e., ∑singularity = χ.
+		 * @private
+		 * @method module:Projects.TrivialConnections#satisfyGaussBonnet
+		 * @param {Object} singularity A dictionary mapping each vertex of the input mesh
+		 * to either 0 or 1, where 1 indicates that the vertex is a singularity and 0
+		 * indicates that it is not.
+		 * @returns {boolean}
+		 */
+		satisfyGaussBonnet(singularity) {
+			let sum = 0;
+			let mesh = this.geometry.mesh;
+			for (let v of mesh.vertices) {
+				sum += singularity[v];
+			}
+
+			return Math.abs(mesh.eulerCharacteristic() - sum) < 1e-8;
+		}
+
+		/**
+		 * Computes the dual 0-form potential β by solving the system d𝛿β = -K + 2π * singularity.
+		 * @private
+		 * @method module:Projects.TrivialConnections#computeCoExactComponent
+		 * @param {Object} singularity A dictionary mapping each vertex of the input mesh
+		 * to either 0 or 1, where 1 indicates that the vertex is a singularity and 0
+		 * indicates that it is not.
+		 * @returns {module:LinearAlgebra.DenseMatrix} The coexact component 𝛿β.
+		 */
+		computeCoExactComponent(singularity) {
+			let vertices = this.geometry.mesh.vertices;
+			let V = vertices.length;
+
+			// construct right hand side
+			let rhs = DenseMatrix$3.zeros(V, 1);
+			for (let v of vertices) {
+				let i = this.vertexIndex[v];
+				let u = -this.geometry.angleDefect(v) + 2 * Math.PI * singularity[v];
+
+				rhs.set(u, i, 0);
+			}
+
+			// solve linear system
+			let llt = this.A.chol();
+			let betaTilde = llt.solvePositiveDefinite(rhs);
+
+			return this.hodge1.timesDense(this.d0.timesDense(betaTilde));
+		}
+
+		/**
+		 * Given an initial angle αi in face i, this function computes the new angle
+		 * αj in the neighboring face j as αj = αi - θij + θji, where θij and θji are
+		 * the angles between the shared edge e and an arbitrary but fixed reference direction
+		 * in faces i and j. Repeating this procedure for n consecutive dual edges in a
+		 * generator gives a sequence of angles α0 , . . . , αn with a resulting total
+		 * angle defect equal to αn - α0. This corresponds to transporting a vector around
+		 * a generator by unfolding, sliding and refolding it across neighboring faces
+		 * without any extra in plane rotation.
+		 * @private
+		 * @method module:Projects.TrivialConnections#transportNoRotation
+		 * @param {Object} h A halfedge lying on the shared edge between face i and j.
+		 * @param {number} alphaI The initial angle αi.
+		 * @returns {number}
+		 */
+		transportNoRotation(h, alphaI = 0) {
+			let u = this.geometry.vector(h);
+
+			let [e1, e2] = this.geometry.orthonormalBases(h.face);
+			let thetaIJ = Math.atan2(u.dot(e2), u.dot(e1));
+
+			let [f1, f2] = this.geometry.orthonormalBases(h.twin.face);
+			let thetaJI = Math.atan2(u.dot(f2), u.dot(f1));
+
+			return alphaI - thetaIJ + thetaJI;
+		}
+
+		/**
+		 * Computes the harmonic component γ = ∑_{i = 1, ..., 2g} zi ξi by solving
+		 * the system Pz = v - ∑𝛿β. v - ∑𝛿β should be normalized to lie between -π and π.
+		 * @private
+		 * @method module:Projects.TrivialConnections#computeHarmonicComponent
+		 * @param {module:LinearAlgebra.DenseMatrix} deltaBeta The coexact component 𝛿β.
+		 * @returns {module:LinearAlgebra.DenseMatrix}
+		 */
+		computeHarmonicComponent(deltaBeta) {
+			let N = this.bases.length;
+			let E = this.geometry.mesh.edges.length;
+			let gamma = DenseMatrix$3.zeros(E, 1);
+
+			if (N > 0) {
+				// construct right hand side
+				let rhs = DenseMatrix$3.zeros(N, 1);
+				for (let i = 0; i < N; i++) {
+					let generator = this.geometry.mesh.generators[i];
+					let sum = 0;
+
+					for (let h of generator) {
+						let k = this.edgeIndex[h.edge];
+						let sign = h.edge.halfedge === h ? 1 : -1;
+
+						sum += this.transportNoRotation(h);
+						sum -= sign * deltaBeta.get(k, 0);
+					}
+
+					// normalize sum between -π and π
+					while (sum < -Math.PI) sum += 2 * Math.PI;
+					while (sum >= Math.PI) sum -= 2 * Math.PI;
+
+					rhs.set(sum, i, 0);
+				}
+
+				// solve linear system
+				let lu = this.P.lu();
+				let z = lu.solveSquare(rhs);
+
+				// compute γ
+				for (let i = 0; i < N; i++) {
+					let basis = this.bases[i];
+					let zi = z.get(i, 0);
+
+					gamma.incrementBy(basis.timesReal(zi));
+				}
+			}
+
+			return gamma;
+		}
+
+		/**
+		 * Computes the dual 1-form connections φ = 𝛿β + γ.
+		 * @method module:Projects.TrivialConnections#computeConnections
+		 * @param {Object} singularity A dictionary mapping each vertex of the input mesh
+		 * to either 0 or 1, where 1 indicates that the vertex is a singularity and 0
+		 * indicates that it is not.
+		 * @returns {module:LinearAlgebra.DenseMatrix}
+		 */
+		computeConnections(singularity) {
+			if (!this.satisfyGaussBonnet(singularity)) {
+				alert("Singularities do not add up to the euler characteristic of the mesh");
+				return undefined;
+			}
+
+			// coexact component 𝛿β
+			let deltaBeta = this.computeCoExactComponent(singularity);
+
+			// extract harmonic component
+			let gamma = this.computeHarmonicComponent(deltaBeta);
+
+			return deltaBeta.plus(gamma);
+		}
+	}
+
+	var trivialConnections = TrivialConnections;
+
+	let Vector$4 = linearAlgebra.Vector;
+	let DenseMatrix$4 = linearAlgebra.DenseMatrix;
+	let indexElements$5 = mesh[1];
+
+	class HeatMethod {
+		/**
+		 * This class implements the {@link http://www.cs.cmu.edu/~kmcrane/Projects/HeatMethod/ heat method} to compute geodesic distance
+		 * on a surface mesh.
+		 * @constructor module:Projects.HeatMethod
+		 * @param {module:Core.Geometry} geometry The input geometry of the mesh this class acts on.
+		 * @property {module:Core.Geometry} geometry The input geometry of the mesh this class acts on.
+		 * @property {Object} vertexIndex A dictionary mapping each vertex of the input mesh to a unique index.
+		 * @property {module:LinearAlgebra.SparseMatrix} A The laplace matrix of the input mesh.
+		 * @property {module:LinearAlgebra.SparseMatrix} F The mean curvature flow operator built on the input mesh.
+		 */
+		constructor(geometry) {
+			this.geometry = geometry;
+			this.vertexIndex = indexElements$5(geometry.mesh.vertices);
+
+			// build laplace and flow matrices
+			let t = Math.pow(geometry.meanEdgeLength(), 2);
+			let M = geometry.massMatrix(this.vertexIndex);
+			this.A = geometry.laplaceMatrix(this.vertexIndex);
+			this.F = M.plus(this.A.timesReal(t));
+		}
+
+		/**
+		 * Computes the vector field X = -∇u / |∇u|.
+		 * @private
+		 * @method module:Projects.HeatMethod#computeVectorField
+		 * @param {module:LinearAlgebra.DenseMatrix} u A dense vector (i.e., u.nCols() == 1) representing the
+		 * heat that is allowed to diffuse on the input mesh for a brief period of time.
+		 * @returns {Object} A dictionary mapping each face of the input mesh to a {@link module:LinearAlgebra.Vector Vector}.
+		 */
+		computeVectorField(u) {
+			let X = {};
+			for (let f of this.geometry.mesh.faces) {
+				let normal = this.geometry.faceNormal(f);
+				let area = this.geometry.area(f);
+				let gradU = new Vector$4();
+
+				for (let h of f.adjacentHalfedges()) {
+					let i = this.vertexIndex[h.prev.vertex];
+					let ui = u.get(i, 0);
+					let ei = this.geometry.vector(h);
+
+					gradU.incrementBy(normal.cross(ei).times(ui));
+				}
+
+				gradU.divideBy(2 * area);
+				gradU.normalize();
+
+				X[f] = gradU.negated();
+			}
+
+			return X;
+		}
+
+		/**
+		 * Computes the integrated divergence ∇.X.
+		 * @private
+		 * @method module:Projects.HeatMethod#computeDivergence
+		 * @param {Object} X The vector field -∇u / |∇u| represented by a dictionary
+		 * mapping each face of the input mesh to a {@link module:LinearAlgebra.Vector Vector}.
+		 * @returns {module:LinearAlgebra.DenseMatrix}
+		 */
+		computeDivergence(X) {
+			let vertices = this.geometry.mesh.vertices;
+			let V = vertices.length;
+			let div = DenseMatrix$4.zeros(V, 1);
+
+			for (let v of vertices) {
+				let i = this.vertexIndex[v];
+				let sum = 0;
+
+				for (let h of v.adjacentHalfedges()) {
+					if (!h.onBoundary) {
+						let Xj = X[h.face];
+						let e1 = this.geometry.vector(h);
+						let e2 = this.geometry.vector(h.prev.twin);
+						let cotTheta1 = this.geometry.cotan(h);
+						let cotTheta2 = this.geometry.cotan(h.prev);
+
+						sum += (cotTheta1 * e1.dot(Xj) + cotTheta2 * e2.dot(Xj));
+					}
+				}
+
+				div.set(0.5 * sum, i, 0);
+			}
+
+			return div;
+		}
+
+		/**
+		 * Shifts φ such that its minimum value is zero.
+		 * @private
+		 * @method module:Projects.HeatMethod#subtractMinimumDistance
+		 * @param {module:LinearAlgebra.DenseMatrix} phi The (minimum 0) solution to the poisson equation Δφ = ∇.X.
+		 */
+		subtractMinimumDistance(phi) {
+			let min = Infinity;
+			for (let i = 0; i < phi.nRows(); i++) {
+				min = Math.min(phi.get(i, 0), min);
+			}
+
+			for (let i = 0; i < phi.nRows(); i++) {
+				phi.set(phi.get(i, 0) - min, i, 0);
+			}
+		}
+
+		/**
+		 * Computes the geodesic distances φ using the heat method.
+		 * @method module:Projects.HeatMethod#compute
+		 * @param {module:LinearAlgebra.DenseMatrix} delta A dense vector (i.e., delta.nCols() == 1) containing
+		 * heat sources, i.e., u0 = δ(x).
+		 * @returns {module:LinearAlgebra.DenseMatrix}
+		 */
+		compute(delta) {
+			// integrate heat flow
+			let llt = this.F.chol();
+			let u = llt.solvePositiveDefinite(delta);
+
+			// compute unit vector field X and divergence ∇.X
+			let X = this.computeVectorField(u);
+			let div = this.computeDivergence(X);
+
+			// solve poisson equation Δφ = ∇.X
+			llt = this.A.chol();
+			let phi = llt.solvePositiveDefinite(div.negated());
+
+			// since φ is unique up to an additive constant, it should
+			// be shifted such that the smallest distance is zero
+			this.subtractMinimumDistance(phi);
+
+			return phi;
+		}
+	}
+
+	var heatMethod = HeatMethod;
+
+	let DenseMatrix$5 = linearAlgebra.DenseMatrix;
+	let indexElements$6 = mesh[1];
+	let normalize$4 = geometry$1[1];
+
+	class MeanCurvatureFlow {
+		/**
+		 * This class performs {@link https://www.cs.cmu.edu/~kmcrane/Projects/DDG/paper.pdf mean curvature flow} on a surface mesh.
+		 * @constructor module:Projects.MeanCurvatureFlow
+		 * @param {module:Core.Geometry} geometry The input geometry of the mesh this class acts on.
+		 * @property {module:Core.Geometry} geometry The input geometry of the mesh this class acts on.
+		 * @property {Object} vertexIndex A dictionary mapping each vertex of the input mesh to a unique index.
+		 */
+		constructor(geometry) {
+			this.geometry = geometry;
+			this.vertexIndex = indexElements$6(geometry.mesh.vertices);
+		}
+
+		/**
+		 * Builds the mean curvature flow operator.
+		 * @private
+		 * @method module:Projects.MeanCurvatureFlow#buildFlowOperator
+		 * @param {module:LinearAlgebra.SparseMatrix} M The mass matrix of the input mesh.
+		 * @param {number} h The timestep.
+		 * @returns {module:LinearAlgebra.SparseMatrix}
+		 */
+		buildFlowOperator(M, h) {
+			let A = this.geometry.laplaceMatrix(this.vertexIndex);
+
+			// F = M + hA
+			return M.plus(A.timesReal(h));
+		}
+
+		/**
+		 * Performs mean curvature flow on the input mesh with timestep h.
+		 * @method module:Projects.MeanCurvatureFlow#integrate
+		 * @param {number} h The timestep.
+		 */
+		integrate(h) {
+			// build the flow and mass matrices
+			let vertices = this.geometry.mesh.vertices;
+			let V = vertices.length;
+			let M = this.geometry.massMatrix(this.vertexIndex);
+			let F = this.buildFlowOperator(M, h);
+
+			// construct right hand side
+			let f0 = DenseMatrix$5.zeros(V, 3);
+			for (let v of vertices) {
+				let i = this.vertexIndex[v];
+				let p = this.geometry.positions[v];
+
+				f0.set(p.x, i, 0);
+				f0.set(p.y, i, 1);
+				f0.set(p.z, i, 2);
+			}
+
+			let rhs = M.timesDense(f0);
+
+			// solve linear system (M - hA)fh = Mf0
+			let llt = F.chol();
+			let fh = llt.solvePositiveDefinite(rhs);
+
+			// update positions
+			for (let v of vertices) {
+				let i = this.vertexIndex[v];
+				let p = this.geometry.positions[v];
+
+				p.x = fh.get(i, 0);
+				p.y = fh.get(i, 1);
+				p.z = fh.get(i, 2);
+			}
+
+			// center mesh positions around origin
+			normalize$4(this.geometry.positions, vertices, false);
+		}
+	}
+
+	var meanCurvatureFlow = MeanCurvatureFlow;
+
+	class ModifiedMeanCurvatureFlow extends meanCurvatureFlow {
+		/**
+		 * This class performs a {@link http://www.cs.jhu.edu/~misha/MyPapers/SGP12.pdf modified version} of {@link https://www.cs.cmu.edu/~kmcrane/Projects/DDG/paper.pdf mean curvature flow} on a surface mesh.
+		 * @constructor module:Projects.ModifiedMeanCurvatureFlow
+		 * @augments module:Projects.MeanCurvatureFlow
+		 * @param {module:Core.Geometry} geometry The input geometry of the mesh this class acts on.
+		 * @property {module:LinearAlgebra.SparseMatrix} A The laplace matrix of the input mesh.
+		 */
+		constructor(geometry) {
+			super(geometry);
+			this.A = geometry.laplaceMatrix(this.vertexIndex);
+		}
+
+		/**
+		 * @inheritdoc
+		 */
+		buildFlowOperator(M, h) {
+			// F = M + hA
+			return M.plus(this.A.timesReal(h));
+		}
+	}
+
+	var modifiedMeanCurvatureFlow = ModifiedMeanCurvatureFlow;
+
+	let DenseMatrix$6 = linearAlgebra.DenseMatrix;
+	let indexElements$7 = mesh[1];
+
+	/**
+	 * @module Projects
+	 */
+	class ScalarPoissonProblem {
+		/**
+		 * This class solves a {@link https://www.cs.cmu.edu/~kmcrane/Projects/DDG/paper.pdf scalar poisson problem} on a surface mesh.
+		 * @constructor module:Projects.ScalarPoissonProblem
+		 * @param {module:Core.Geometry} geometry The input geometry of the mesh this class acts on.
+		 * @property {Object} vertexIndex A dictionary mapping each vertex of the input mesh to a unique index.
+		 * @property {module:LinearAlgebra.SparseMatrix} A The laplace matrix of the input mesh.
+		 * @property {module:LinearAlgebra.SparseMatrix} M The mass matrix of the input mesh.
+		 * @property {number} totalArea The total surface area of the input mesh.
+		 */
+		constructor(geometry) {
+			// index vertices
+			this.vertexIndex = indexElements$7(geometry.mesh.vertices);
+
+			// build laplace and mass matrices
+			this.A = geometry.laplaceMatrix(this.vertexIndex);
+			this.M = geometry.massMatrix(this.vertexIndex);
+			this.totalArea = geometry.totalArea();
+		}
+
+		/**
+		 * Computes the solution of the poisson problem Ax = -M(rho - rhoBar), where A
+		 * is the positive definite laplace matrix and M is the mass matrix.
+		 * @method module:Projects.ScalarPoissonProblem#solve
+		 * @param {module:LinearAlgebra.DenseMatrix} rho A scalar density of vertices of the input mesh.
+		 * @returns {module:LinearAlgebra.DenseMatrix}
+		 */
+		solve(rho) {
+			// construct right hand side
+			let V = this.M.nRows();
+			let totalRho = this.M.timesDense(rho).sum();
+			let rhoBar = DenseMatrix$6.ones(V, 1).timesReal(totalRho / this.totalArea);
+			let rhs = this.M.timesDense(rhoBar.minus(rho));
+
+			// solve linear system
+			let llt = this.A.chol();
+			let phi = llt.solvePositiveDefinite(rhs);
+
+			return phi;
+		}
+	}
+
+	var scalarPoissonProblem = ScalarPoissonProblem;
+
+	let Vector$5 = linearAlgebra.Vector;
 
 	/**
 	 * This class computes the quasi conformal error and area scaling resulting from
@@ -4096,32 +5524,32 @@
 			let v2 = q[2].minus(q[0]);
 
 			// compute orthonormal bases
-			let e1 = new Vector$2(u1.x, u1.y, u1.z);
+			let e1 = new Vector$5(u1.x, u1.y, u1.z);
 			e1.normalize();
 			let e2 = u2.minus(e1.times(u2.dot(e1)));
 			e2.normalize();
 
-			let f1 = new Vector$2(v1.x, v1.y, v1.z);
+			let f1 = new Vector$5(v1.x, v1.y, v1.z);
 			f1.normalize();
 			let f2 = v2.minus(f1.times(v2.dot(f1)));
 			f2.normalize();
 
 			// project onto bases
-			p[0] = new Vector$2();
-			p[1] = new Vector$2(u1.dot(e1), u1.dot(e2));
-			p[2] = new Vector$2(u2.dot(e1), u2.dot(e2));
+			p[0] = new Vector$5();
+			p[1] = new Vector$5(u1.dot(e1), u1.dot(e2));
+			p[2] = new Vector$5(u2.dot(e1), u2.dot(e2));
 
-			q[0] = new Vector$2();
-			q[1] = new Vector$2(v1.dot(f1), v1.dot(f2));
-			q[2] = new Vector$2(v2.dot(f1), v2.dot(f2));
+			q[0] = new Vector$5();
+			q[1] = new Vector$5(v1.dot(f1), v1.dot(f2));
+			q[2] = new Vector$5(v2.dot(f1), v2.dot(f2));
 
 			let A = 2.0 * u1.cross(u2).norm();
 
-			let Ss = new Vector$2();
+			let Ss = new Vector$5();
 			for (let i = 0; i < 3; i++) Ss.incrementBy(q[i].times(p[(i + 1) % 3].y - p[(i + 2) % 3].y));
 			Ss.divideBy(A);
 
-			let St = new Vector$2();
+			let St = new Vector$5();
 			for (let i = 0; i < 3; i++) St.incrementBy(q[i].times(p[(i + 2) % 3].x - p[(i + 1) % 3].x));
 			St.divideBy(A);
 
@@ -4319,12 +5747,12 @@
 			}
 		}
 
-		return new Vector$2(r, g, b);
+		return new Vector$5(r, g, b);
 	}
 
 	var distortion = Distortion;
 
-	let Vector$3 = linearAlgebra.Vector;
+	let Vector$6 = linearAlgebra.Vector;
 
 	let seismic$1 = [
 		[0.000, [0.000, 0.000, 0.300]],
@@ -5868,8 +7296,8 @@
 		while (values[i][0] < x) i = i + 1;
 		i = i - 1;
 
-		let c1 = new Vector$3(values[i][1][0], values[i][1][1], values[i][1][2]);
-		let c2 = new Vector$3(values[i + 1][1][0], values[i + 1][1][1], values[i + 1][1][2]);
+		let c1 = new Vector$6(values[i][1][0], values[i][1][1], values[i][1][2]);
+		let c2 = new Vector$6(values[i + 1][1][0], values[i + 1][1][1], values[i + 1][1][2]);
 		let scaling = (x - values[i][0]) / Math.abs(values[i][0] - values[i + 1][0]);
 
 		return c1.plus(c2.minus(c1).times(scaling));
@@ -5882,88 +7310,7 @@
 		"hot": hot
 	};
 
-	let Complex$2 = linearAlgebra.Complex;
-	let ComplexDenseMatrix$1 = linearAlgebra.ComplexDenseMatrix;
-
-	/**
-	 * This class implements frequently used numerical algorithms such as the inverse power method.
-	 * @memberof module:Utils
-	 */
-	class Solvers {
-		/**
-		 * Computes the residual of Ax - λx, where x has unit norm and λ = x.Ax.
-		 * @param {module:LinearAlgebra.ComplexSparseMatrix} A The complex sparse matrix whose eigen decomposition
-		 * is being computed.
-		 * @param {module:LinearAlgebra.ComplexDenseMatrix} x The current guess for the smallest eigenvector
-		 * (corresponding to the smallest eigenvalue λ) of A.
-		 * @returns {number}
-		 */
-		static residual(A, x) {
-			let Ax = A.timesDense(x);
-			let xH = x.transpose().conjugate();
-			let xHAx = xH.timesDense(Ax).get(0, 0);
-			let xHx = xH.timesDense(x).get(0, 0);
-			let lambda = xHAx.overComplex(xHx);
-
-			return Ax.minus(x.timesComplex(lambda)).get(0, 0).norm(2) / x.norm(2);
-		}
-
-		/**
-		 * Solves Ax = λx, where λ is the smallest nonzero eigenvalue of A and x is the
-		 * corresponding eigenvector. x should be initialized to a random complex dense
-		 * vector (i.e., x.nCols() == 1).
-		 * @param {module:LinearAlgebra.ComplexSparseMatrix} A The complex positive definite sparse matrix
-		 * whose eigen decomposition needs to be computed.
-		 * @returns {module:LinearAlgebra.ComplexDenseMatrix} The smallest eigenvector (corresponding to the
-		 * smallest eigenvalue λ) of A.
-		 */
-		static solveInversePowerMethod(A) {
-			// compute prefactorization
-			let N = A.nRows();
-			let llt = A.chol();
-			let ones = ComplexDenseMatrix$1.ones(N, 1);
-			let x = ComplexDenseMatrix$1.random(N, 1);
-
-			do {
-				x = llt.solvePositiveDefinite(x);
-
-				// subtract mean
-				let mean = x.sum().overReal(N);
-				x.decrementBy(ones.timesComplex(mean));
-
-				// normalize
-				x.scaleBy(new Complex$2(1.0 / x.norm(2)));
-
-			} while (Solvers.residual(A, x) > 1e-10);
-
-			return x;
-		}
-
-		/**
-		 * Inverts a 2x2 matrix.
-		 * @param {module:LinearAlgebra.DenseMatrix} m The matrix to be inverted.
-		 * @returns {module:LinearAlgebra.DenseMatrix}
-		 */
-		static invert2x2(m) {
-			let m00 = m.get(0, 0);
-			let m01 = m.get(0, 1);
-			let m10 = m.get(1, 0);
-			let m11 = m.get(1, 1);
-
-			let det = m00 * m11 - m01 * m10;
-			m.set(m11, 0, 0);
-			m.set(m00, 1, 1);
-			m.set(-m01, 0, 1);
-			m.set(-m10, 1, 0);
-			m.scaleBy(1.0 / det);
-
-			return m;
-		}
-	}
-
-	var solvers = Solvers;
-
-	let Vector$4 = linearAlgebra.Vector;
+	let Vector$7 = linearAlgebra.Vector;
 
 	/**
 	 * This class converts text from 3D file formats such as OBJ to a polygon soup mesh
@@ -5990,7 +7337,7 @@
 				let identifier = tokens[0].trim();
 
 				if (identifier === "v") {
-					positions.push(new Vector$4(parseFloat(tokens[1]), parseFloat(tokens[2]), parseFloat(tokens[3])));
+					positions.push(new Vector$7(parseFloat(tokens[1]), parseFloat(tokens[2]), parseFloat(tokens[3])));
 
 				} else if (identifier === "f") {
 					if (tokens.length > 4) {
@@ -6057,45 +7404,55 @@
 
 	var meshio = MeshIO;
 
-	const [Mesh$1, indexElements$1] = mesh;
-	const [Geometry$1, normalize$2] = geometry;
-	const Vector$5 = linearAlgebra.Vector;
+	const [Mesh$1, indexElements$8] = mesh;
+	const [Geometry$1, normalize$5] = geometry$1;
+	const Vector$8 = linearAlgebra.Vector;
 	const memoryManager = linearAlgebra.memoryManager;
-	const Complex$3 = linearAlgebra.Complex;
-	const DenseMatrix$1 = linearAlgebra.DenseMatrix;
-	const SparseMatrix$4 = linearAlgebra.SparseMatrix;
-	const Triplet$4 = linearAlgebra.Triplet;
+	const Complex$4 = linearAlgebra.Complex;
+	const DenseMatrix$7 = linearAlgebra.DenseMatrix;
+	const SparseMatrix$7 = linearAlgebra.SparseMatrix;
+	const Triplet$5 = linearAlgebra.Triplet;
 	const ComplexDenseMatrix$2 = linearAlgebra.ComplexDenseMatrix;
-	const ComplexSparseMatrix$3 = linearAlgebra.ComplexSparseMatrix;
-	const ComplexTriplet$3 = linearAlgebra.ComplexTriplet;
+	const ComplexSparseMatrix$4 = linearAlgebra.ComplexSparseMatrix;
+	const ComplexTriplet$4 = linearAlgebra.ComplexTriplet;
 	const colormap$2 = colormap_1.colormap;
 	const seismic$2 = colormap_1.seismic;
 	const coolwarm$1 = colormap_1.coolwarm;
 	const hot$1 = colormap_1.hot;
 
-	exports.Complex = Complex$3;
+	exports.BoundaryFirstFlattening = boundaryFirstFlattening;
+	exports.Complex = Complex$4;
 	exports.ComplexDenseMatrix = ComplexDenseMatrix$2;
-	exports.ComplexSparseMatrix = ComplexSparseMatrix$3;
-	exports.ComplexTriplet = ComplexTriplet$3;
+	exports.ComplexSparseMatrix = ComplexSparseMatrix$4;
+	exports.ComplexTriplet = ComplexTriplet$4;
 	exports.Corner = corner;
 	exports.DEC = discreteExteriorCalculus;
-	exports.DenseMatrix = DenseMatrix$1;
+	exports.DenseMatrix = DenseMatrix$7;
 	exports.Distortion = distortion;
 	exports.Edge = edge;
 	exports.Face = face;
 	exports.Geometry = Geometry$1;
 	exports.Halfedge = halfedge;
+	exports.HarmonicBases = harmonicBases;
+	exports.HeatMethod = heatMethod;
+	exports.HodgeDecomposition = hodgeDecomposition;
+	exports.MeanCurvatureFlow = meanCurvatureFlow;
 	exports.Mesh = Mesh$1;
 	exports.MeshIO = meshio;
+	exports.ModifiedMeanCurvatureFlow = modifiedMeanCurvatureFlow;
+	exports.ScalarPoissonProblem = scalarPoissonProblem;
 	exports.Solvers = solvers;
-	exports.SparseMatrix = SparseMatrix$4;
-	exports.Triplet = Triplet$4;
-	exports.Vector = Vector$5;
+	exports.SparseMatrix = SparseMatrix$7;
+	exports.SpectralConformalParameterization = spectralConformalParameterization;
+	exports.TreeCotree = treeCotree;
+	exports.Triplet = Triplet$5;
+	exports.TrivialConnections = trivialConnections;
+	exports.Vector = Vector$8;
 	exports.Vertex = vertex;
 	exports.colormap = colormap$2;
 	exports.coolwarm = coolwarm$1;
 	exports.hot = hot$1;
-	exports.indexElements = indexElements$1;
+	exports.indexElements = indexElements$8;
 	exports.memoryManager = memoryManager;
 	exports.seismic = seismic$2;
 
